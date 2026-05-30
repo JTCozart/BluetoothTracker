@@ -1,0 +1,441 @@
+@page "/"
+@rendermode InteractiveServer
+@using BluetoothTracker.Services
+@using Windows.Devices.Bluetooth.Advertisement
+@inject BluetoothService Bluetooth
+@inject BleCompanyDatabase BleDb
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>BLE Scanner</PageTitle>
+
+<!-- Toolbar -->
+<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+    <h1 class="mb-0">Scanner</h1>
+
+    <div class="d-flex align-items-center gap-2">
+        <label class="text-muted small fw-semibold mb-0">Mode</label>
+        <select class="form-select form-select-sm" style="width:auto"
+                value="@selectedMode" @onchange="OnModeChanged">
+            <option value="@ScanMode.Passive">Passive — listen only</option>
+            <option value="@ScanMode.Active">Active — sends scan requests</option>
+            <option value="@ScanMode.Extended">Extended — BLE 5.0</option>
+        </select>
+    </div>
+
+    <div class="d-flex align-items-center gap-2">
+        <label class="text-muted small fw-semibold mb-0">Refresh</label>
+        <select class="form-select form-select-sm" style="width:auto"
+                value="@pollMs" @onchange="OnPollChanged">
+            <option value="500">500 ms</option>
+            <option value="1000">1 second</option>
+            <option value="2000">2 seconds</option>
+            <option value="5000">5 seconds</option>
+        </select>
+    </div>
+
+    <!-- Filter toggle -->
+    <button class="btn btn-sm @(HasActiveFilters ? "btn-warning" : "btn-outline-secondary")"
+            @onclick="() => filterOpen = !filterOpen">
+        <i class="fa-solid fa-filter me-1"></i>Filters@(HasActiveFilters ? $" ({ActiveFilterCount} active)" : "")
+    </button>
+
+    @if (Bluetooth.IsScanning)
+    {
+        <span class="badge bg-success d-flex align-items-center gap-2">
+            <span class="spinner-grow spinner-grow-sm" role="status"></span>
+            @Bluetooth.CurrentMode
+        </span>
+        <button class="btn btn-outline-danger btn-sm" @onclick="Stop">Stop</button>
+        <span class="text-muted small ms-auto">
+            @totalAdverts adverts &mdash; @filteredDevices.Count / @devices.Count shown
+        </span>
+    }
+    else
+    {
+        <button class="btn btn-primary" @onclick="Start">Start Scan</button>
+    }
+</div>
+
+<!-- Filter panel (slide-down) -->
+@if (filterOpen)
+{
+    <div class="card mb-3 border-warning">
+        <div class="card-body">
+            <div class="d-flex align-items-center justify-content-between mb-3">
+                <h6 class="mb-0">Filters <span class="text-muted fw-normal">(cumulative — all selected criteria must match)</span></h6>
+                <div class="d-flex gap-2">
+                    @if (HasActiveFilters)
+                    {
+                        <button class="btn btn-sm btn-outline-danger" @onclick="ClearFilters">Clear All</button>
+                    }
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => filterOpen = false">Close</button>
+                </div>
+            </div>
+
+            <div class="row g-3">
+                <!-- Proximity -->
+                <div class="col-sm-6 col-md-3">
+                    <label class="form-label small fw-semibold">Proximity</label>
+                    <div class="d-flex flex-column gap-1">
+                        @foreach (var p in new[] { "Very Close", "Close", "Near", "Far" })
+                        {
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="prox_@p"
+                                       checked="@filterProximity.Contains(p)"
+                                       @onchange="e => ToggleFilter(filterProximity, p, (bool)e.Value!)" />
+                                <label class="form-check-label small" for="prox_@p">@p</label>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Advertisement type -->
+                <div class="col-sm-6 col-md-3">
+                    <label class="form-label small fw-semibold">Advertisement Type</label>
+                    <div class="d-flex flex-column gap-1">
+                        @foreach (var t in new[] { "Conn", "NonConn", "Scan", "ScanRsp", "Conn-D" })
+                        {
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="adv_@t"
+                                       checked="@filterAdvType.Contains(t)"
+                                       @onchange="e => ToggleFilter(filterAdvType, t, (bool)e.Value!)" />
+                                <label class="form-check-label small" for="adv_@t">@t</label>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Named / Unknown -->
+                <div class="col-sm-6 col-md-3">
+                    <label class="form-label small fw-semibold">Identity</label>
+                    <div class="d-flex flex-column gap-1">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="flt_named"
+                                   checked="@filterNamedOnly"
+                                   @onchange="e => filterNamedOnly = (bool)e.Value!" />
+                            <label class="form-check-label small" for="flt_named">Named only</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="flt_hideunknown"
+                                   checked="@filterHideUnknown"
+                                   @onchange="e => filterHideUnknown = (bool)e.Value!" />
+                            <label class="form-check-label small" for="flt_hideunknown">Hide unnamed</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="flt_hidestale"
+                                   checked="@filterHideStale"
+                                   @onchange="e => filterHideStale = (bool)e.Value!" />
+                            <label class="form-check-label small" for="flt_hidestale">Hide stale</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="flt_mfr"
+                                   checked="@filterHasManufacturer"
+                                   @onchange="e => filterHasManufacturer = (bool)e.Value!" />
+                            <label class="form-check-label small" for="flt_mfr">Has manufacturer data</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Signal strength -->
+                <div class="col-sm-6 col-md-3">
+                    <label class="form-label small fw-semibold">Min Signal (dBm)</label>
+                    <div class="d-flex align-items-center gap-2">
+                        <input type="range" class="form-range" min="-100" max="-40"
+                               value="@filterMinRssi"
+                               @oninput="e => filterMinRssi = int.Parse(e.Value!.ToString()!)" />
+                        <span class="text-muted small text-nowrap">@filterMinRssi dBm</span>
+                    </div>
+                    <div class="text-muted" style="font-size:0.7rem">Hides devices weaker than this</div>
+                    @if (filterMinRssi > -100)
+                    {
+                        <button class="btn btn-xs btn-outline-secondary mt-1"
+                                @onclick="() => filterMinRssi = -100">Reset</button>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Advertisement type breakdown *@
+@if (advTypeCounts.Any())
+{
+    <div class="d-flex flex-wrap gap-2 mb-3">
+        @foreach (var kv in advTypeCounts.OrderByDescending(x => x.Value))
+        {
+            var badge = kv.Key == "NonConnectableUndirected" ? "warning" : "secondary";
+            <span class="badge bg-@badge">@kv.Key: @kv.Value</span>
+        }
+    </div>
+}
+
+@if (Bluetooth.LastError is not null)
+{
+    <div class="alert alert-danger mb-3"><strong>Error:</strong> @Bluetooth.LastError</div>
+}
+
+@if (!filteredDevices.Any())
+{
+    <div class="text-muted">
+        @if (!devices.Any())
+        {
+            @if (Bluetooth.IsScanning)
+            {
+                <p>Listening for nearby BLE devices&hellip;</p>
+                @if (totalAdverts == 0)
+                {
+                    <div class="alert alert-warning mt-2" style="max-width:580px">
+                        <strong>No advertisements received yet.</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Confirm Bluetooth is on. Check <a href="/diagnostics">Diagnostics</a>.</li>
+                            <li>Run as <strong>Administrator</strong>.</li>
+                            <li>Try Active or Extended scan mode.</li>
+                        </ul>
+                    </div>
+                }
+            }
+            else
+            {
+                <p>Press <strong>Start Scan</strong> to discover nearby BLE devices.</p>
+            }
+        }
+        else
+        {
+            <p>No devices match the current filters. <button class="btn btn-sm btn-link p-0" @onclick="ClearFilters">Clear filters</button></p>
+        }
+    </div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th>Name / Manufacturer</th>
+                    <th>Address</th>
+                    <th>Adv Type</th>
+                    <th style="width:150px">Signal</th>
+                    <th style="width:110px">Proximity</th>
+                    <th>Services / Info</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in filteredDevices)
+                {
+                    <tr class="@(d.IsStale ? "table-secondary" : "")">
+                        <td>
+                            @if (d.IsNamed)
+                            {
+                                <span class="fw-semibold">@d.Name</span>
+                                @if (!string.IsNullOrEmpty(d.GetManufacturerLabel(BleDb)))
+                                {
+                                    <br /><span class="text-muted small">@d.GetManufacturerLabel(BleDb)</span>
+                                }
+                            }
+                            else if (d.HasManufacturerData)
+                            {
+                                <span class="fw-semibold">@d.GetManufacturerLabel(BleDb)</span>
+                            }
+                            else
+                            {
+                                <span class="text-muted">(unnamed)</span>
+                            }
+                            @if (d.IsStale)
+                            {
+                                <span class="badge bg-secondary ms-1" style="font-size:0.6rem">stale</span>
+                            }
+                        </td>
+                        <td class="font-monospace small text-muted">@d.AddressString</td>
+                        <td>
+                            <span class="badge bg-@d.AdvTypeBadge" style="font-size:0.65rem">
+                                @d.AdvTypeShort
+                            </span>
+                        </td>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="progress flex-grow-1" style="height:8px">
+                                    <div class="progress-bar bg-@d.ProximityBadge"
+                                         style="width:@d.SignalPercent%"></div>
+                                </div>
+                                <span class="small text-muted text-nowrap">@d.Rssi dBm</span>
+                            </div>
+                        </td>
+                        <td><span class="badge bg-@d.ProximityBadge">@d.ProximityLabel</span></td>
+                        <td class="small">
+                            @foreach (var uuid in d.ServiceUuids.Take(3))
+                            {
+                                var svcName = BluetoothTracker.Services.BleDecoder.GetServiceName(Guid.Parse(uuid), BleDb);
+                                <span class="d-block" title="@uuid" style="font-size:0.7rem">
+                                    @(string.IsNullOrEmpty(svcName) ? uuid[..8] + "…" : svcName)
+                                </span>
+                            }
+                            @if (d.ServiceUuids.Count > 3)
+                            {
+                                <span class="text-muted">+@(d.ServiceUuids.Count - 3) more</span>
+                            }
+                            @if (!string.IsNullOrEmpty(d.DecodedManufacturerInfo))
+                            {
+                                <span class="d-block text-success fw-semibold"
+                                      title="Raw: @d.ManufacturerHex" style="font-size:0.7rem">
+                                    @d.DecodedManufacturerInfo
+                                </span>
+                            }
+                            else if (!string.IsNullOrEmpty(d.ManufacturerHex))
+                            {
+                                <span class="d-block text-muted font-monospace text-truncate"
+                                      title="@d.ManufacturerHex"
+                                      style="font-size:0.7rem;max-width:180px">
+                                    @d.ManufacturerHex
+                                </span>
+                            }
+                        </td>
+                        <td>
+                            <div class="d-flex gap-1 flex-nowrap">
+                                <button class="btn btn-sm btn-outline-primary"
+                                        @onclick="() => GoMonitor(d.Address)">Monitor</button>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        @onclick="() => GoProbe(d.Address)">Probe</button>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <p class="text-muted small">Greyed rows = not seen in last 30s, kept for 5 minutes.</p>
+}
+
+@code {
+    private List<BleDevice> devices = new();
+    private List<BleDevice> filteredDevices = new();
+    private int totalAdverts;
+    private Dictionary<string, int> advTypeCounts = new();
+    private ScanMode selectedMode = ScanMode.Passive;
+    private int pollMs = 1000;
+    private System.Threading.Timer? _uiTimer;
+
+    // ── Filter state ─────────────────────────────────────────────────────────
+    private bool filterOpen;
+    private HashSet<string> filterProximity = new();
+    private HashSet<string> filterAdvType = new();
+    private bool filterNamedOnly;
+    private bool filterHideUnknown;
+    private bool filterHideStale;
+    private bool filterHasManufacturer;
+    private int filterMinRssi = -100;
+
+    private bool HasActiveFilters =>
+        filterProximity.Any() || filterAdvType.Any() ||
+        filterNamedOnly || filterHideUnknown || filterHideStale ||
+        filterHasManufacturer || filterMinRssi > -100;
+
+    private int ActiveFilterCount =>
+        (filterProximity.Any() ? 1 : 0) +
+        (filterAdvType.Any() ? 1 : 0) +
+        (filterNamedOnly ? 1 : 0) +
+        (filterHideUnknown ? 1 : 0) +
+        (filterHideStale ? 1 : 0) +
+        (filterHasManufacturer ? 1 : 0) +
+        (filterMinRssi > -100 ? 1 : 0);
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override void OnInitialized()
+    {
+        selectedMode = Bluetooth.CurrentMode;
+        Bluetooth.DevicesChanged += OnDevicesChanged;
+        StartTimer();
+    }
+
+    private void StartTimer()
+    {
+        _uiTimer?.Dispose();
+        var interval = TimeSpan.FromMilliseconds(pollMs);
+        _uiTimer = new System.Threading.Timer(_ => InvokeAsync(RefreshList), null, interval, interval);
+    }
+
+    private void OnDevicesChanged() => InvokeAsync(RefreshList);
+
+    private void RefreshList()
+    {
+        devices = Bluetooth.GetDevices().ToList();
+        totalAdverts = Bluetooth.TotalAdvertisementsReceived;
+        advTypeCounts = new Dictionary<string, int>(Bluetooth.AdvTypeCounts);
+        filteredDevices = ApplyFilters(devices);
+        StateHasChanged();
+    }
+
+    // ── Filter logic ──────────────────────────────────────────────────────────
+
+    private List<BleDevice> ApplyFilters(List<BleDevice> all)
+    {
+        return all.Where(d =>
+        {
+            if (filterProximity.Any() && !filterProximity.Contains(d.ProximityLabel))     return false;
+            if (filterAdvType.Any()   && !filterAdvType.Contains(d.AdvTypeShort))         return false;
+            if (filterNamedOnly       && !d.IsNamed)                                       return false;
+            if (filterHideUnknown     && !d.IsNamed && !d.HasManufacturerData)             return false;
+            if (filterHideStale       && d.IsStale)                                        return false;
+            if (filterHasManufacturer && !d.HasManufacturerData)                           return false;
+            if (d.Rssi < filterMinRssi)                                                    return false;
+            return true;
+        }).ToList();
+    }
+
+    private void ToggleFilter(HashSet<string> set, string value, bool add)
+    {
+        if (add) set.Add(value); else set.Remove(value);
+    }
+
+    private void ClearFilters()
+    {
+        filterProximity.Clear();
+        filterAdvType.Clear();
+        filterNamedOnly = false;
+        filterHideUnknown = false;
+        filterHideStale = false;
+        filterHasManufacturer = false;
+        filterMinRssi = -100;
+        RefreshList();
+    }
+
+    // ── Controls ──────────────────────────────────────────────────────────────
+
+    private void OnModeChanged(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<ScanMode>(e.Value?.ToString(), out var mode)) return;
+        selectedMode = mode;
+        if (Bluetooth.IsScanning) Bluetooth.SwitchMode(mode);
+        StateHasChanged();
+    }
+
+    private void OnPollChanged(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var ms)) return;
+        pollMs = ms;
+        StartTimer();
+    }
+
+    private void Start() { Bluetooth.StartScanning(selectedMode); StateHasChanged(); }
+    private void Stop()  { Bluetooth.StopScanning(); RefreshList(); }
+
+    private void GoMonitor(ulong address)
+    {
+        Bluetooth.StopScanning();
+        Nav.NavigateTo($"/monitor/{address}");
+    }
+
+    private void GoProbe(ulong address)
+    {
+        Bluetooth.StopScanning();
+        Nav.NavigateTo($"/probe/{address}");
+    }
+
+    public void Dispose()
+    {
+        _uiTimer?.Dispose();
+        Bluetooth.DevicesChanged -= OnDevicesChanged;
+    }
+}

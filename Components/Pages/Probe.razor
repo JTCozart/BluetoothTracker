@@ -1,0 +1,539 @@
+@page "/probe"
+@page "/probe/{AddressRaw}"
+@rendermode InteractiveServer
+@using System.Globalization
+@using BluetoothTracker.Services
+@using Windows.Devices.Bluetooth
+@using Windows.Devices.Bluetooth.GenericAttributeProfile
+@using Windows.Storage.Streams
+@inject NavigationManager Nav
+@inject BleCompanyDatabase BleDb
+@implements IDisposable
+
+<PageTitle>Probe@(device is not null ? $" — {DeviceLabel}" : "")</PageTitle>
+
+<div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+    <a href="/" class="btn btn-sm btn-outline-secondary"><i class="fa-solid fa-arrow-left me-1"></i>Scanner</a>
+    @if (device is not null)
+    {
+        <span class="fw-semibold">@DeviceLabel</span>
+        <span class="font-monospace text-muted small">@targetMac</span>
+        <span class="badge bg-success">Connected</span>
+        <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="Disconnect">Disconnect</button>
+    }
+</div>
+
+@if (device is null && !connecting)
+{
+    <!-- Manual entry form -->
+    <h1 class="mb-4">Probe Device</h1>
+    <p class="text-muted">Enter a MAC address to connect and explore GATT services, characteristics, and capabilities.</p>
+    <div class="card" style="max-width:480px">
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label fw-semibold">MAC Address</label>
+                <input class="form-control form-control-lg font-monospace @(showError ? "is-invalid" : "")"
+                       placeholder="AA:BB:CC:DD:EE:FF"
+                       @bind="macInput" @bind:event="oninput" @onkeydown="OnKeyDown"
+                       autofocus />
+                @if (showError) { <div class="invalid-feedback">Invalid MAC address</div> }
+            </div>
+            <button class="btn btn-primary btn-lg w-100" @onclick="() => _ = ConnectAsync()">Connect</button>
+        </div>
+    </div>
+}
+else if (connecting)
+{
+    <div class="d-flex align-items-center gap-3 mt-4">
+        <div class="spinner-border text-primary"></div>
+        <span>Connecting to @targetMac&hellip;</span>
+    </div>
+    @if (connectError is not null)
+    {
+        <div class="alert alert-danger mt-3" style="max-width:480px">@connectError</div>
+    }
+}
+else
+{
+    <!-- Quick commands -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h6 class="text-muted mb-3">Quick Commands</h6>
+            <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshAll" disabled="@refreshing">
+                    @if (refreshing) { <span class="spinner-border spinner-border-sm me-1"></span> }
+                    Refresh All
+                </button>
+                @if (HasService("00001802-0000-1000-8000-00805f9b34fb"))
+                {
+                    <button class="btn btn-sm btn-warning" @onclick="() => _ = AlertAsync(2)" title="High Alert — makes the device beep">
+                        <i class="fa-solid fa-bell me-1"></i>Beep (High Alert)
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning" @onclick="() => _ = AlertAsync(1)" title="Mild Alert">
+                        <i class="fa-regular fa-bell me-1"></i>Mild Alert
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => _ = AlertAsync(0)" title="Stop Alert">
+                        <i class="fa-solid fa-bell-slash me-1"></i>Stop Alert
+                    </button>
+                }
+                @if (HasService("0000180f-0000-1000-8000-00805f9b34fb"))
+                {
+                    <button class="btn btn-sm btn-outline-success" @onclick="ReadBattery">
+                        <i class="fa-solid fa-battery-three-quarters me-1"></i>Read Battery
+                    </button>
+                }
+                @if (batteryLevel.HasValue)
+                {
+                    <span class="badge bg-success fs-6">Battery: @batteryLevel%</span>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- GATT tree -->
+    @foreach (var svc in services)
+    {
+        <div class="card mb-3">
+            <div class="card-header d-flex align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold">
+                    @(string.IsNullOrEmpty(svc.Name) ? svc.Uuid[..8] + "…" : svc.Name)
+                </span>
+                <span class="font-monospace text-muted small">@svc.Uuid</span>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:220px">Characteristic</th>
+                            <th style="width:130px">Properties</th>
+                            <th>Value</th>
+                            <th style="width:220px">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var ch in svc.Characteristics)
+                        {
+                            <tr>
+                                <td>
+                                    <div class="small fw-semibold">
+                                        @(string.IsNullOrEmpty(ch.Name) ? ch.Uuid[..8] + "…" : ch.Name)
+                                    </div>
+                                    <div class="font-monospace text-muted" style="font-size:0.65rem">@ch.Uuid</div>
+                                </td>
+                                <td>
+                                    <div class="d-flex flex-wrap gap-1">
+                                        @foreach (var prop in ch.PropertyBadges)
+                                        {
+                                            <span class="badge bg-@prop.Color" style="font-size:0.6rem">@prop.Label</span>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (!string.IsNullOrEmpty(ch.Value))
+                                    {
+                                        <div class="small">@ch.Value</div>
+                                        <div class="font-monospace text-muted" style="font-size:0.65rem">@ch.RawHex</div>
+                                    }
+                                    @if (ch.Notifications.Any())
+                                    {
+                                        <div class="mt-1">
+                                            @foreach (var n in ch.Notifications.TakeLast(3))
+                                            {
+                                                <div class="font-monospace text-primary" style="font-size:0.65rem">
+                                                    @n.Time.ToLocalTime().ToString("HH:mm:ss") <i class="fa-solid fa-arrow-right mx-1"></i> @n.Hex
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </td>
+                                <td>
+                                    <div class="d-flex flex-wrap gap-1">
+                                        @if (ch.CanRead)
+                                        {
+                                            <button class="btn btn-xs btn-outline-secondary"
+                                                    @onclick="() => _ = ReadCharAsync(ch)">Read</button>
+                                        }
+                                        @if (ch.CanNotify || ch.CanIndicate)
+                                        {
+                                            <button class="btn btn-xs @(ch.Subscribed ? "btn-primary" : "btn-outline-primary")"
+                                                    @onclick="() => _ = ToggleNotifyAsync(ch)">
+                                                @(ch.Subscribed ? "Unsubscribe" : "Subscribe")
+                                            </button>
+                                        }
+                                        @if (ch.CanWrite || ch.CanWriteNoResponse)
+                                        {
+                                            <div class="d-flex gap-1 mt-1 w-100">
+                                                <input class="form-control form-control-sm font-monospace"
+                                                       placeholder="hex e.g. FF 01"
+                                                       @bind="ch.WriteInput"
+                                                       style="font-size:0.7rem;min-width:100px" />
+                                                <button class="btn btn-xs btn-outline-danger"
+                                                        @onclick="() => _ = WriteCharAsync(ch)">Write</button>
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public string? AddressRaw { get; set; }
+
+    private ulong address;
+    private string targetMac = string.Empty;
+    private string macInput = string.Empty;
+    private bool showError;
+    private bool connecting;
+    private bool refreshing;
+    private string? connectError;
+    private int? batteryLevel;
+
+    private BluetoothLEDevice? device;
+    private List<ServiceViewModel> services = new();
+
+    private string DeviceLabel => device?.Name is { Length: > 0 } n ? n : targetMac;
+
+    // ── Models ───────────────────────────────────────────────────────────────
+
+    record PropertyBadge(string Label, string Color);
+
+    class CharacteristicViewModel
+    {
+        public required GattCharacteristic Gatt { get; init; }
+        public required string Uuid { get; init; }
+        public required string Name { get; init; }
+        public required List<PropertyBadge> PropertyBadges { get; init; }
+        public bool CanRead { get; init; }
+        public bool CanWrite { get; init; }
+        public bool CanWriteNoResponse { get; init; }
+        public bool CanNotify { get; init; }
+        public bool CanIndicate { get; init; }
+        public string? Value { get; set; }
+        public string? RawHex { get; set; }
+        public string WriteInput { get; set; } = string.Empty;
+        public bool Subscribed { get; set; }
+        public List<(DateTime Time, string Hex)> Notifications { get; } = new();
+    }
+
+    class ServiceViewModel
+    {
+        public required string Uuid { get; init; }
+        public required string Name { get; init; }
+        public required List<CharacteristicViewModel> Characteristics { get; init; }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override void OnInitialized()
+    {
+        if (!string.IsNullOrEmpty(AddressRaw) &&
+            ulong.TryParse(AddressRaw, out address))
+        {
+            targetMac = FormatMac(address);
+            _ = ConnectAsync();
+        }
+    }
+
+    // ── Connection ───────────────────────────────────────────────────────────
+
+    private async Task ConnectAsync()
+    {
+        if (!string.IsNullOrEmpty(macInput))
+        {
+            if (!TryParseMac(macInput, out address)) { showError = true; return; }
+            targetMac = FormatMac(address);
+        }
+
+        showError = false;
+        connecting = true;
+        connectError = null;
+        StateHasChanged();
+
+        foreach (var addrType in new[] { BluetoothAddressType.Random, BluetoothAddressType.Public })
+        {
+            try
+            {
+                var candidate = await BluetoothLEDevice.FromBluetoothAddressAsync(address, addrType);
+                if (candidate is null) continue;
+
+                var test = await candidate.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+                if (test.Status != GattCommunicationStatus.Success)
+                {
+                    candidate.Dispose();
+                    continue;
+                }
+
+                device = candidate;
+                await BuildServiceTreeAsync(test.Services);
+                break;
+            }
+            catch (Exception ex) { connectError = ex.Message; }
+        }
+
+        if (device is null && connectError is null)
+            connectError = "Could not connect. Make sure the device is in connectable mode.";
+
+        connecting = false;
+        StateHasChanged();
+    }
+
+    private void Disconnect()
+    {
+        UnsubscribeAll();
+        device?.Dispose();
+        device = null;
+        services.Clear();
+        batteryLevel = null;
+        StateHasChanged();
+    }
+
+    // ── Build GATT tree ───────────────────────────────────────────────────────
+
+    private async Task BuildServiceTreeAsync(IReadOnlyList<GattDeviceService> gattServices)
+    {
+        services.Clear();
+        foreach (var svc in gattServices)
+        {
+            var svcName = BleDecoder.GetServiceName(svc.Uuid, BleDb);
+            var chars = new List<CharacteristicViewModel>();
+
+            var charResult = await svc.GetCharacteristicsAsync(BluetoothCacheMode.Uncached);
+            if (charResult.Status == GattCommunicationStatus.Success)
+            {
+                foreach (var ch in charResult.Characteristics)
+                {
+                    var props  = ch.CharacteristicProperties;
+                    var canR   = props.HasFlag(GattCharacteristicProperties.Read);
+                    var canW   = props.HasFlag(GattCharacteristicProperties.Write);
+                    var canWNR = props.HasFlag(GattCharacteristicProperties.WriteWithoutResponse);
+                    var canN   = props.HasFlag(GattCharacteristicProperties.Notify);
+                    var canI   = props.HasFlag(GattCharacteristicProperties.Indicate);
+
+                    var badges = new List<PropertyBadge>();
+                    if (canR)   badges.Add(new("Read",    "secondary"));
+                    if (canW)   badges.Add(new("Write",   "danger"));
+                    if (canWNR) badges.Add(new("WNR",     "warning"));
+                    if (canN)   badges.Add(new("Notify",  "primary"));
+                    if (canI)   badges.Add(new("Indicate","info"));
+
+                    var vm = new CharacteristicViewModel
+                    {
+                        Gatt            = ch,
+                        Uuid            = ch.Uuid.ToString(),
+                        Name            = KnownCharName(ch.Uuid),
+                        PropertyBadges  = badges,
+                        CanRead         = canR,
+                        CanWrite        = canW,
+                        CanWriteNoResponse = canWNR,
+                        CanNotify       = canN,
+                        CanIndicate     = canI
+                    };
+
+                    if (canR)
+                        await ReadCharAsync(vm);
+
+                    chars.Add(vm);
+                }
+            }
+
+            services.Add(new ServiceViewModel
+            {
+                Uuid            = svc.Uuid.ToString(),
+                Name            = svcName,
+                Characteristics = chars
+            });
+        }
+    }
+
+    // ── Read / Write / Notify ─────────────────────────────────────────────────
+
+    private async Task ReadCharAsync(CharacteristicViewModel vm)
+    {
+        try
+        {
+            var result = await vm.Gatt.ReadValueAsync(BluetoothCacheMode.Uncached);
+            if (result.Status != GattCommunicationStatus.Success) return;
+            vm.RawHex = BufferToHex(result.Value);
+            vm.Value  = GattCharacteristicReader.DecodeBuffer(vm.Gatt.Uuid, result.Value);
+        }
+        catch { }
+        StateHasChanged();
+    }
+
+    private async Task WriteCharAsync(CharacteristicViewModel vm)
+    {
+        var bytes = ParseHexInput(vm.WriteInput);
+        if (bytes is null) return;
+        try
+        {
+            var writer = new DataWriter();
+            writer.WriteBytes(bytes);
+            var writeType = vm.CanWrite
+                ? GattWriteOption.WriteWithResponse
+                : GattWriteOption.WriteWithoutResponse;
+            await vm.Gatt.WriteValueAsync(writer.DetachBuffer(), writeType);
+            if (vm.CanRead) await ReadCharAsync(vm);
+        }
+        catch { }
+    }
+
+    private async Task ToggleNotifyAsync(CharacteristicViewModel vm)
+    {
+        try
+        {
+            if (vm.Subscribed)
+            {
+                await vm.Gatt.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue.None);
+                vm.Gatt.ValueChanged -= (_, __) => { };
+                vm.Subscribed = false;
+            }
+            else
+            {
+                var descriptor = vm.CanNotify
+                    ? GattClientCharacteristicConfigurationDescriptorValue.Notify
+                    : GattClientCharacteristicConfigurationDescriptorValue.Indicate;
+                var status = await vm.Gatt
+                    .WriteClientCharacteristicConfigurationDescriptorAsync(descriptor);
+                if (status == GattCommunicationStatus.Success)
+                {
+                    vm.Gatt.ValueChanged += (_, args) =>
+                    {
+                        var hex = BufferToHex(args.CharacteristicValue);
+                        vm.Notifications.Add((DateTime.UtcNow, hex));
+                        if (vm.Notifications.Count > 20) vm.Notifications.RemoveAt(0);
+                        InvokeAsync(StateHasChanged);
+                    };
+                    vm.Subscribed = true;
+                }
+            }
+        }
+        catch { }
+        StateHasChanged();
+    }
+
+    private void UnsubscribeAll()
+    {
+        foreach (var svc in services)
+            foreach (var ch in svc.Characteristics.Where(c => c.Subscribed))
+                _ = ch.Gatt.WriteClientCharacteristicConfigurationDescriptorAsync(
+                        GattClientCharacteristicConfigurationDescriptorValue.None);
+    }
+
+    // ── Quick commands ────────────────────────────────────────────────────────
+
+    private async Task AlertAsync(byte level)
+    {
+        var alertSvc = services.FirstOrDefault(s =>
+            s.Uuid == "00001802-0000-1000-8000-00805f9b34fb");
+        var alertCh = alertSvc?.Characteristics.FirstOrDefault(c =>
+            c.Uuid == "00002a06-0000-1000-8000-00805f9b34fb");
+        if (alertCh is null) return;
+
+        alertCh.WriteInput = level.ToString("X2");
+        await WriteCharAsync(alertCh);
+    }
+
+    private async Task ReadBattery()
+    {
+        var batSvc = services.FirstOrDefault(s =>
+            s.Uuid == "0000180f-0000-1000-8000-00805f9b34fb");
+        var batCh = batSvc?.Characteristics.FirstOrDefault(c =>
+            c.Uuid == "00002a19-0000-1000-8000-00805f9b34fb");
+        if (batCh is null) return;
+
+        await ReadCharAsync(batCh);
+        if (batCh.Value is not null &&
+            int.TryParse(batCh.Value.Replace("%", "").Trim(), out var pct))
+            batteryLevel = pct;
+        StateHasChanged();
+    }
+
+    private async Task RefreshAll()
+    {
+        refreshing = true;
+        StateHasChanged();
+        foreach (var svc in services)
+            foreach (var ch in svc.Characteristics.Where(c => c.CanRead))
+                await ReadCharAsync(ch);
+        refreshing = false;
+        StateHasChanged();
+    }
+
+    private bool HasService(string uuid) =>
+        services.Any(s => s.Uuid == uuid);
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static string KnownCharName(Guid uuid)
+    {
+        var b = uuid.ToByteArray();
+        return (ushort)((b[1] << 8) | b[0]) switch
+        {
+            0x2A00 => "Device Name",
+            0x2A01 => "Appearance",
+            0x2A02 => "Peripheral Privacy",
+            0x2A04 => "Preferred Connection Params",
+            0x2A05 => "Service Changed",
+            0x2A06 => "Alert Level",
+            0x2A07 => "Tx Power Level",
+            0x2A19 => "Battery Level",
+            0x2A24 => "Model Number",
+            0x2A25 => "Serial Number",
+            0x2A26 => "Firmware Revision",
+            0x2A27 => "Hardware Revision",
+            0x2A28 => "Software Revision",
+            0x2A29 => "Manufacturer Name",
+            0x2A2B => "Current Time",
+            0x2A37 => "Heart Rate Measurement",
+            0x2A38 => "Body Sensor Location",
+            0x2A6D => "Pressure",
+            0x2A6E => "Temperature",
+            0x2A6F => "Humidity",
+            _ => string.Empty
+        };
+    }
+
+    private static string BufferToHex(IBuffer buffer)
+    {
+        var reader = DataReader.FromBuffer(buffer);
+        var bytes = new byte[buffer.Length];
+        reader.ReadBytes(bytes);
+        return BitConverter.ToString(bytes).Replace("-", " ");
+    }
+
+    private static byte[]? ParseHexInput(string input)
+    {
+        try
+        {
+            var parts = input.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Select(p => Convert.ToByte(p, 16)).ToArray();
+        }
+        catch { return null; }
+    }
+
+    private static string FormatMac(ulong addr) =>
+        string.Join(":", BitConverter.GetBytes(addr).Take(6).Reverse().Select(b => b.ToString("X2")));
+
+    private static bool TryParseMac(string input, out ulong address)
+    {
+        address = 0;
+        var clean = input.Replace(":", "").Replace("-", "").Trim();
+        return clean.Length == 12 &&
+               ulong.TryParse(clean, NumberStyles.HexNumber, null, out address);
+    }
+
+    private void OnKeyDown(KeyboardEventArgs e) { if (e.Key == "Enter") _ = ConnectAsync(); }
+
+    public void Dispose()
+    {
+        UnsubscribeAll();
+        device?.Dispose();
+    }
+}

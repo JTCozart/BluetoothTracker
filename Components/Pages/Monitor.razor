@@ -1,0 +1,410 @@
+@page "/monitor/{AddressRaw}"
+@rendermode InteractiveServer
+@using BluetoothTracker.Services
+@using System.Text
+@using Windows.Devices.Bluetooth
+@inject BluetoothService Bluetooth
+@inject BleCompanyDatabase BleDb
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Monitoring @targetMac</PageTitle>
+
+<div class="mb-3 d-flex align-items-center gap-3">
+    <a href="/" class="btn btn-sm btn-outline-secondary"><i class="fa-solid fa-arrow-left me-1"></i>Back</a>
+    <span class="font-monospace text-muted">@targetMac</span>
+    @if (!Bluetooth.IsScanning)
+    {
+        <button class="btn btn-sm btn-primary" @onclick="StartScan">Start Scan</button>
+    }
+    else
+    {
+        <span class="badge bg-success d-flex align-items-center gap-2">
+            <span class="spinner-grow spinner-grow-sm" role="status"></span>
+            Scanning
+        </span>
+    }
+</div>
+
+@if (device is null)
+{
+    <div class="card" style="max-width:480px">
+        <div class="card-body text-center py-5">
+            <div class="spinner-border text-primary mb-3" role="status"></div>
+            <h5>Waiting for device&hellip;</h5>
+            <p class="text-muted mb-0">
+                Listening for <code>@targetMac</code> to broadcast.
+                Make sure the device is powered on and nearby.
+            </p>
+            @if (!Bluetooth.IsScanning)
+            {
+                <div class="alert alert-warning mt-3 text-start">
+                    Scanner is not running. Press <strong>Start Scan</strong> above.
+                </div>
+            }
+        </div>
+    </div>
+}
+else
+{
+    <div class="row g-4">
+        <!-- Header card -->
+        <div class="col-12">
+            <div class="card border-@device.ProximityBadge">
+                <div class="card-body d-flex align-items-center gap-4 flex-wrap">
+                    <div class="proximity-icon text-@device.ProximityBadge">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1z"/>
+                            <path d="M8 4a4 4 0 1 0 0 8A4 4 0 0 0 8 4zm0 1a3 3 0 1 1 0 6A3 3 0 0 1 8 5z"/>
+                            <path d="M8 7a1 1 0 1 0 0 2A1 1 0 0 0 8 7z"/>
+                        </svg>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h2 class="mb-1">@deviceName</h2>
+                        <div class="font-monospace text-muted small">@device.AddressString</div>
+                        @if (!string.IsNullOrEmpty(device.GetManufacturerLabel(BleDb)))
+                        {
+                            <span class="badge bg-secondary mt-1">@device.GetManufacturerLabel(BleDb)</span>
+                        }
+                    </div>
+                    <div class="text-end">
+                        <div class="display-6 fw-bold text-@device.ProximityBadge">@device.Rssi dBm</div>
+                        <span class="badge bg-@device.ProximityBadge fs-6">@device.ProximityLabel</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Signal bar -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted mb-3">Signal Strength</h6>
+                    <div class="progress" style="height: 28px; border-radius: 8px;">
+                        <div class="progress-bar bg-@device.ProximityBadge progress-bar-striped progress-bar-animated"
+                             role="progressbar"
+                             style="width: @device.SignalPercent%; font-size: 0.85rem; font-weight: 600;"
+                             aria-valuenow="@device.SignalPercent" aria-valuemin="0" aria-valuemax="100">
+                            @if (device.SignalPercent > 20)
+                            {
+                                <span>@device.SignalPercent%</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between text-muted small mt-1">
+                        <span>Far (-100 dBm)</span>
+                        <span>Very Close (-40 dBm)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RSSI history sparkline -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="card-subtitle text-muted mb-3">Signal History (last 60s)</h6>
+                    <div class="sparkline-container">
+                        <svg class="sparkline" viewBox="0 0 600 80" preserveAspectRatio="none">
+                            @if (history.Count > 1)
+                            {
+                                var pts = BuildSparklinePoints();
+                                <polyline points="@pts"
+                                          fill="none"
+                                          stroke="var(--bs-@device.ProximityBadge)"
+                                          stroke-width="2.5"
+                                          stroke-linejoin="round"
+                                          stroke-linecap="round" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="d-flex justify-content-between text-muted small mt-1">
+                        <span>60s ago</span>
+                        <span>Now</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="col-md-4">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-1">Last Seen</div>
+                    <div class="fw-semibold">@lastSeenText</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-1">Min RSSI (session)</div>
+                    <div class="fw-semibold">@(history.Count > 0 ? $"{history.Min(h => h.rssi)} dBm" : "—")</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-1">Max RSSI (session)</div>
+                    <div class="fw-semibold">@(history.Count > 0 ? $"{history.Max(h => h.rssi)} dBm" : "—")</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Services & advertisement data -->
+        @if (device.ServiceUuids.Any() || device.HasManufacturerData)
+        {
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-subtitle text-muted mb-3">Advertisement Data</h6>
+
+                        @if (device.ServiceUuids.Any())
+                        {
+                            <div class="mb-3">
+                                <div class="text-muted small fw-semibold mb-2">Service UUIDs</div>
+                                <div class="d-flex flex-wrap gap-2">
+                                    @foreach (var uuid in device.ServiceUuids)
+                                    {
+                                        var name = BluetoothTracker.Services.BleDecoder.GetServiceName(Guid.Parse(uuid), BleDb);
+                                        <div class="border rounded px-2 py-1" style="font-size:0.8rem">
+                                            @if (!string.IsNullOrEmpty(name))
+                                            {
+                                                <span class="fw-semibold">@name</span>
+                                                <br />
+                                            }
+                                            <span class="font-monospace text-muted" style="font-size:0.7rem">@uuid</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        @if (device.HasManufacturerData)
+                        {
+                            <div>
+                                <div class="text-muted small fw-semibold mb-2">
+                                    Manufacturer Data
+                                    <span class="badge bg-secondary ms-1">@device.GetManufacturerLabel(BleDb)</span>
+                                    <span class="text-muted fw-normal ms-1">(ID 0x@device.ManufacturerId.ToString("X4"))</span>
+                                </div>
+
+                                @if (!string.IsNullOrEmpty(device.DecodedManufacturerInfo))
+                                {
+                                    <div class="alert alert-success py-2 mb-2">
+                                        @device.DecodedManufacturerInfo
+                                    </div>
+                                }
+
+                                <div class="font-monospace p-2 rounded"
+                                     style="background:#f8f9fa;font-size:0.75rem;word-break:break-all">
+                                    @FormatHexDisplay(device.ManufacturerHex)
+                                </div>
+                                <div class="text-muted small mt-1">
+                                    @(device.ManufacturerBytes.Length) bytes
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+        <!-- GATT query panel — only for connectable devices -->
+        @if (device.AdvertisementType == Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementType.ConnectableUndirected ||
+             device.AdvertisementType == Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementType.ConnectableDirected ||
+             gattValues.Any())
+        {
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+                            <h6 class="card-subtitle text-muted mb-0">Public GATT Characteristics</h6>
+                            <button class="btn btn-sm btn-outline-primary" @onclick="QueryGatt" disabled="@gattQuerying">
+                                @if (gattQuerying)
+                                {
+                                    <span class="spinner-border spinner-border-sm me-1"></span>
+                                    <span>Reading&hellip;</span>
+                                }
+                                else
+                                {
+                                    <span>@(gattValues.Any() ? "Refresh" : "Query Device")</span>
+                                }
+                            </button>
+                            @if (gattValues.Any())
+                            {
+                                <span class="text-muted small">@gattValues.Count value(s) read</span>
+                            }
+                        </div>
+
+                        @if (gattError is not null)
+                        {
+                            <div class="alert alert-warning py-2 mb-2">@gattError</div>
+                        }
+
+                        @if (gattValues.Any())
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Service</th>
+                                            <th>Characteristic</th>
+                                            <th>Value</th>
+                                            <th>Raw</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var v in gattValues)
+                                        {
+                                            <tr>
+                                                <td class="small text-muted">@v.ServiceName</td>
+                                                <td class="small fw-semibold">@v.CharacteristicName</td>
+                                                <td>@v.Value</td>
+                                                <td class="font-monospace text-muted"
+                                                    style="font-size:0.7rem">@v.RawHex</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                        else if (!gattQuerying && gattError is null)
+                        {
+                            <p class="text-muted small mb-0">
+                                Click <strong>Query Device</strong> to read all publicly accessible
+                                GATT characteristics — battery, device info, sensors, and more.
+                                Device must be connectable (shown as <code>Conn</code> in the scanner).
+                            </p>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string AddressRaw { get; set; } = string.Empty;
+
+    private ulong address;
+    private string targetMac = string.Empty;
+    private BleDevice? device;
+    private string deviceName = "Device";
+    private string lastSeenText = "—";
+
+    private readonly List<(DateTime time, int rssi)> history = new();
+    private System.Threading.Timer? _timer;
+
+    private List<CharacteristicValue> gattValues = new();
+    private bool gattQuerying;
+    private string? gattError;
+
+    protected override void OnInitialized()
+    {
+        address = ulong.TryParse(AddressRaw, out var parsed) ? parsed : 0;
+        targetMac = FormatMac(address);
+
+        // Scanning was stopped when navigating here from the scanner
+
+        Bluetooth.DevicesChanged += OnChanged;
+        _timer = new System.Threading.Timer(_ => InvokeAsync(Refresh), null,
+            TimeSpan.Zero, TimeSpan.FromSeconds(1));
+    }
+
+    private void StartScan()
+    {
+        Bluetooth.StartScanning(ScanMode.Active);
+        StateHasChanged();
+    }
+
+    private void OnChanged() => InvokeAsync(Refresh);
+
+    private void Refresh()
+    {
+        device = Bluetooth.GetDevice(address);
+        if (device is not null)
+        {
+            deviceName = string.IsNullOrEmpty(device.Name)
+                ? (string.IsNullOrEmpty(device.GetManufacturerLabel(BleDb)) ? targetMac : device.GetManufacturerLabel(BleDb))
+                : device.Name;
+
+            var age = DateTime.UtcNow - device.LastSeen;
+            lastSeenText = age.TotalSeconds < 2 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+
+            history.Add((DateTime.UtcNow, device.Rssi));
+            var cutoff = DateTime.UtcNow.AddSeconds(-60);
+            while (history.Count > 0 && history[0].time < cutoff)
+                history.RemoveAt(0);
+        }
+        StateHasChanged();
+    }
+
+    private string BuildSparklinePoints()
+    {
+        if (history.Count < 2) return string.Empty;
+
+        var earliest = history[0].time;
+        var latest = history[^1].time;
+        var span = (latest - earliest).TotalSeconds;
+        if (span <= 0) span = 1;
+
+        var minRssi = history.Min(h => h.rssi) - 5;
+        var maxRssi = history.Max(h => h.rssi) + 5;
+        var rssiRange = maxRssi - minRssi;
+        if (rssiRange <= 0) rssiRange = 1;
+
+        return string.Join(" ", history.Select(h =>
+        {
+            var x = (h.time - earliest).TotalSeconds / span * 600;
+            var y = 80 - (h.rssi - minRssi) / (double)rssiRange * 80;
+            return $"{x:F1},{y:F1}";
+        }));
+    }
+
+    private static string FormatMac(ulong address) =>
+        string.Join(":", BitConverter.GetBytes(address).Take(6).Reverse().Select(b => b.ToString("X2")));
+
+    private async Task QueryGatt()
+    {
+        gattQuerying = true;
+        gattError    = null;
+        StateHasChanged();
+
+        var addrType = device?.AdvertisementType ==
+            Windows.Devices.Bluetooth.Advertisement.BluetoothLEAdvertisementType.ConnectableUndirected
+                ? BluetoothAddressType.Public
+                : BluetoothAddressType.Random;
+
+        var (values, error) = await GattCharacteristicReader.ReadAllAsync(address, addrType, BleDb);
+
+        // If Public failed try Random
+        if (error is not null && !values.Any())
+        {
+            var alt = addrType == BluetoothAddressType.Public
+                ? BluetoothAddressType.Random : BluetoothAddressType.Public;
+            (values, error) = await GattCharacteristicReader.ReadAllAsync(address, alt, BleDb);
+        }
+
+        gattValues   = values;
+        gattError    = error;
+        gattQuerying = false;
+        StateHasChanged();
+    }
+
+    // Groups hex bytes into rows of 8 for readability
+    private static string FormatHexDisplay(string hex)
+    {
+        var bytes = hex.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return string.Join("  ", bytes
+            .Select((b, i) => (b, i))
+            .GroupBy(x => x.i / 8)
+            .Select(g => string.Join(" ", g.Select(x => x.b))));
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Bluetooth.DevicesChanged -= OnChanged;
+    }
+}

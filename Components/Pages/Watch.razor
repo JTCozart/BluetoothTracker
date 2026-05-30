@@ -1,0 +1,110 @@
+@page "/watch"
+@rendermode InteractiveServer
+@using BluetoothTracker.Services
+@using System.Globalization
+@inject BluetoothService Bluetooth
+@inject NavigationManager Nav
+
+<PageTitle>Watch Device</PageTitle>
+
+<h1 class="mb-4">Watch a Device</h1>
+
+<div class="card" style="max-width:480px">
+    <div class="card-body">
+        <p class="text-muted mb-3">
+            Enter the MAC address of the BLE device you want to monitor.
+            The scanner will start automatically and take you to the live proximity view.
+        </p>
+
+        <div class="mb-3">
+            <label class="form-label fw-semibold">MAC Address</label>
+            <input class="form-control form-control-lg font-monospace @(showError ? "is-invalid" : "")"
+                   placeholder="AA:BB:CC:DD:EE:FF"
+                   @bind="macInput"
+                   @bind:event="oninput"
+                   @onkeydown="OnKeyDown"
+                   autofocus />
+            @if (showError)
+            {
+                <div class="invalid-feedback">
+                    Must be 6 hex pairs separated by <code>:</code> or <code>-</code>, e.g. <code>AA:BB:CC:DD:EE:FF</code>
+                </div>
+            }
+            <div class="form-text">Accepts <code>AA:BB:CC:DD:EE:FF</code> or <code>AA-BB-CC-DD-EE-FF</code></div>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label fw-semibold">Scan Mode</label>
+            <div class="btn-group d-flex" role="group">
+                <input type="radio" class="btn-check" name="watchMode" id="wPassive"
+                       checked="@(selectedMode == ScanMode.Passive)"
+                       @onchange="() => selectedMode = ScanMode.Passive" />
+                <label class="btn btn-outline-secondary" for="wPassive"
+                       title="Listen only — best for trackers that broadcast continuously">Passive</label>
+
+                <input type="radio" class="btn-check" name="watchMode" id="wActive"
+                       checked="@(selectedMode == ScanMode.Active)"
+                       @onchange="() => selectedMode = ScanMode.Active" />
+                <label class="btn btn-outline-secondary" for="wActive"
+                       title="Sends scan requests — surfaces device names and extra data">Active</label>
+
+                <input type="radio" class="btn-check" name="watchMode" id="wExtended"
+                       checked="@(selectedMode == ScanMode.Extended)"
+                       @onchange="() => selectedMode = ScanMode.Extended" />
+                <label class="btn btn-outline-secondary" for="wExtended"
+                       title="BLE 5.0 extended advertisements — needed for some newer trackers">Extended</label>
+            </div>
+        </div>
+
+        <div class="d-grid gap-2">
+            <button class="btn btn-primary btn-lg" @onclick="StartWatch">
+                Track via BLE Ads
+            </button>
+            <button class="btn btn-outline-primary btn-lg" @onclick="StartGatt">
+                Track via GATT Connection
+                <span class="d-block small fw-normal text-muted">
+                    Use this for PebbleBee — press button 5&times; first, then click
+                </span>
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string macInput = string.Empty;
+    private bool showError;
+    private ScanMode selectedMode = ScanMode.Passive;
+
+    protected override void OnInitialized()
+    {
+        selectedMode = Bluetooth.CurrentMode;
+    }
+
+    private void OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") StartWatch();
+    }
+
+    private void StartWatch()
+    {
+        showError = false;
+        if (!TryParseMac(macInput, out var address)) { showError = true; return; }
+        if (!Bluetooth.IsScanning) Bluetooth.StartScanning(selectedMode);
+        Nav.NavigateTo($"/monitor/{address}");
+    }
+
+    private void StartGatt()
+    {
+        showError = false;
+        if (!TryParseMac(macInput, out var address)) { showError = true; return; }
+        Nav.NavigateTo($"/gatt-monitor/{address}");
+    }
+
+    private static bool TryParseMac(string input, out ulong address)
+    {
+        address = 0;
+        var clean = input.Replace(":", "").Replace("-", "").Trim();
+        return clean.Length == 12 &&
+               ulong.TryParse(clean, NumberStyles.HexNumber, null, out address);
+    }
+}

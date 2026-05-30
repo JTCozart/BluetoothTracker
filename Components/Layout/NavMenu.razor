@@ -1,0 +1,32 @@
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">BLE Tracker</a>
+    </div>
+</div>
+
+<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+
+<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+    <nav class="flex-column">
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <i class="fa-brands fa-bluetooth-b fa-fw me-1"></i> Scanner
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="watch">
+                <i class="fa-solid fa-eye fa-fw me-1"></i> Watch
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="probe">
+                <i class="fa-solid fa-stethoscope fa-fw me-1"></i> Probe
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="diagnostics">
+                <i class="fa-solid fa-gear fa-fw me-1"></i> Diagnostics
+            </NavLink>
+        </div>
+    </nav>
+</div>

@@ -1,0 +1,173 @@
+@page "/diagnostics"
+@rendermode InteractiveServer
+@using BluetoothTracker.Services
+@inject BluetoothService Bluetooth
+@implements IDisposable
+
+<PageTitle>BLE Diagnostics</PageTitle>
+
+<h1 class="mb-4">Diagnostics</h1>
+
+<h5 class="text-muted mb-3">Bluetooth Adapter</h5>
+
+@if (!Bluetooth.Adapter.Found)
+{
+    <div class="alert alert-danger">
+        <strong>No Bluetooth adapter detected.</strong>
+        Windows could not find a Bluetooth radio. Possible causes:
+        <ul class="mb-0 mt-2">
+            <li>Bluetooth is disabled in Device Manager or BIOS.</li>
+            <li>No Bluetooth hardware is present — consider a USB BLE dongle.</li>
+            <li>The app is not running with sufficient permissions.</li>
+        </ul>
+    </div>
+}
+else
+{
+    <div class="row g-3 mb-4">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted small mb-1">Adapter Address</div>
+                    <code class="fs-6">@Bluetooth.Adapter.Address</code>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-sm-6 col-md-3">
+            <div class="card h-100 @(Bluetooth.Adapter.IsLeSupported ? "border-success" : "border-danger")">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-2">BLE Supported</div>
+                    @StatusBadge(Bluetooth.Adapter.IsLeSupported)
+                    @if (!Bluetooth.Adapter.IsLeSupported)
+                    {
+                        <p class="text-danger small mt-2 mb-0">This adapter cannot do BLE.</p>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-sm-6 col-md-3">
+            <div class="card h-100 @(Bluetooth.Adapter.IsCentralRoleSupported ? "border-success" : "border-danger")">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-2">Central Role (Scanning)</div>
+                    @StatusBadge(Bluetooth.Adapter.IsCentralRoleSupported)
+                    @if (!Bluetooth.Adapter.IsCentralRoleSupported)
+                    {
+                        <p class="text-danger small mt-2 mb-0">Cannot initiate scans.</p>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-sm-6 col-md-4">
+            <div class="card h-100 @(Bluetooth.Adapter.IsExtendedAdvertisingSupported ? "border-success" : "border-secondary")">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-2">Extended Advertising (BLE 5.0)</div>
+                    @StatusBadge(Bluetooth.Adapter.IsExtendedAdvertisingSupported)
+                    @if (!Bluetooth.Adapter.IsExtendedAdvertisingSupported)
+                    {
+                        <p class="text-muted small mt-2 mb-0">Extended scan mode will not work.</p>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-sm-6 col-md-4">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-2">Advertisement Offload</div>
+                    @StatusBadge(Bluetooth.Adapter.IsAdvertisementOffloadSupported)
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (!Bluetooth.Adapter.IsLeSupported || !Bluetooth.Adapter.IsCentralRoleSupported)
+    {
+        <div class="alert alert-danger">
+            <strong>This adapter cannot scan for BLE devices.</strong>
+            Try a USB Bluetooth 4.0+ dongle (search for "USB BLE adapter" — inexpensive and plug-and-play on Windows 10/11).
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-success">
+            Adapter is BLE-capable and can scan. If you still cannot see devices, try running as <strong>Administrator</strong>
+            and switch scan modes on the <a href="/">Scanner</a> page.
+        </div>
+    }
+}
+
+<h5 class="text-muted mb-3 mt-4">Scanner Status</h5>
+<div class="row g-3">
+    <div class="col-sm-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small mb-2">State</div>
+                @if (Bluetooth.IsScanning)
+                {
+                    <span class="badge bg-success fs-6 d-flex align-items-center justify-content-center gap-2">
+                        <span class="spinner-grow spinner-grow-sm"></span> Scanning
+                    </span>
+                }
+                else
+                {
+                    <span class="badge bg-secondary fs-6">Stopped</span>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small mb-2">Current Mode</div>
+                <span class="fw-semibold">@Bluetooth.CurrentMode</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small mb-2">Advertisements Received</div>
+                <span class="fw-semibold fs-5">@Bluetooth.TotalAdvertisementsReceived</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (Bluetooth.LastError is not null)
+{
+    <div class="alert alert-danger mt-4">
+        <strong>Last Error:</strong> @Bluetooth.LastError
+    </div>
+}
+
+@code {
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Bluetooth.AdapterInfoLoaded += OnUpdate;
+        Bluetooth.DevicesChanged += OnUpdate;
+        _timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null,
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void OnUpdate() => InvokeAsync(StateHasChanged);
+
+    private RenderFragment StatusBadge(bool ok) => __builder =>
+    {
+        __builder.OpenElement(0, "span");
+        __builder.AddAttribute(1, "class", $"badge fs-6 bg-{(ok ? "success" : "danger")}");
+        __builder.AddContent(2, ok ? "Yes" : "No");
+        __builder.CloseElement();
+    };
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Bluetooth.AdapterInfoLoaded -= OnUpdate;
+        Bluetooth.DevicesChanged -= OnUpdate;
+    }
+}
