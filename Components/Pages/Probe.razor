@@ -8,6 +8,7 @@
 @using Windows.Storage.Streams
 @inject NavigationManager Nav
 @inject BleCompanyDatabase BleDb
+@inject DeviceHistoryService Db
 @implements IDisposable
 
 <PageTitle>Probe@(device is not null ? $" — {DeviceLabel}" : "")</PageTitle>
@@ -271,6 +272,7 @@ else
 
                 device = candidate;
                 await BuildServiceTreeAsync(test.Services);
+                await Db.UpsertDeviceAsync(targetMac, device.Name, 0, null);
                 break;
             }
             catch (Exception ex) { connectError = ex.Message; }
@@ -464,6 +466,15 @@ else
                 await ReadCharAsync(ch);
         refreshing = false;
         StateHasChanged();
+
+        // Save snapshot to database
+        var snapshot = services
+            .SelectMany(s => s.Characteristics
+                .Where(c => c.Value is not null)
+                .Select(c => new CharacteristicValue(
+                    s.Name, s.Uuid, c.Name, c.Uuid, c.Value!, c.RawHex ?? "")))
+            .ToList();
+        if (snapshot.Any()) await Db.SaveGattSnapshotAsync(targetMac, snapshot);
     }
 
     private bool HasService(string uuid) =>

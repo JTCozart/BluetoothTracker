@@ -1,0 +1,419 @@
+@page "/history"
+@page "/history/{Address}"
+@rendermode InteractiveServer
+@using BluetoothTracker.Data
+@using BluetoothTracker.Services
+@inject DeviceHistoryService Db
+@inject BleCompanyDatabase BleDb
+@inject NavigationManager Nav
+
+<PageTitle>@(selectedDevice is null ? "Device History" : selectedDevice.Name ?? selectedDevice.Address)</PageTitle>
+
+@if (selectedDevice is null)
+{
+    <!-- Device list -->
+    <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+        <h1 class="mb-0">Device History</h1>
+        <button class="btn btn-sm btn-outline-danger" @onclick="PruneOldLogs"
+                title="Delete proximity logs and GATT snapshots older than 30 days">
+            <i class="fa-solid fa-broom me-1"></i>Prune (30d)
+        </button>
+    </div>
+
+    @if (!devices.Any())
+    {
+        <div class="text-muted">
+            <i class="fa-solid fa-circle-info me-2"></i>
+            No devices recorded yet. Monitor or probe a device to start building history.
+        </div>
+    }
+    else
+    {
+        <div class="row g-3">
+            @foreach (var d in devices)
+            {
+                <div class="col-12">
+                    <div class="card @(d.IsFavorite ? "border-warning" : "")">
+                        <div class="card-body d-flex align-items-start gap-3 flex-wrap">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                    @if (d.IsFavorite)
+                                    {
+                                        <i class="fa-solid fa-star text-warning"></i>
+                                    }
+                                    <span class="fw-semibold fs-5">
+                                        @(string.IsNullOrEmpty(d.Name) ? "(unnamed)" : d.Name)
+                                    </span>
+                                    @if (!string.IsNullOrEmpty(d.ManufacturerName))
+                                    {
+                                        <span class="badge bg-secondary">@d.ManufacturerName</span>
+                                    }
+                                </div>
+                                <div class="font-monospace text-muted small mb-2">@d.Address</div>
+                                <div class="d-flex flex-wrap gap-3 text-muted small">
+                                    <span><i class="fa-regular fa-clock me-1"></i>First seen @d.FirstSeen.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                                    <span><i class="fa-solid fa-clock-rotate-left me-1"></i>Last seen @d.LastSeen.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                                    @if (d.Stats is not null)
+                                    {
+                                        <span><i class="fa-solid fa-eye me-1"></i>@d.Stats.TotalSightings sightings</span>
+                                        <span><i class="fa-solid fa-display me-1"></i>@d.Stats.TotalSessions sessions</span>
+                                        @if (d.Stats.TotalSightings > 0)
+                                        {
+                                            <span><i class="fa-solid fa-signal me-1"></i>Avg @((int)d.Stats.AverageRssi) dBm</span>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <button class="btn btn-sm btn-outline-primary"
+                                        @onclick="() => GoDetail(d.Address)">
+                                    <i class="fa-solid fa-chart-line me-1"></i>Detail
+                                </button>
+                                <button class="btn btn-sm @(d.IsFavorite ? "btn-warning" : "btn-outline-warning")"
+                                        @onclick="() => ToggleFavorite(d.Address)">
+                                    <i class="fa-solid fa-star"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        @onclick="() => GoMonitor(d.Address)">
+                                    <i class="fa-solid fa-satellite-dish"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger"
+                                        @onclick="() => DeleteDevice(d.Address)">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+else
+{
+    <!-- Device detail -->
+    <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-secondary" @onclick="GoBack">
+            <i class="fa-solid fa-arrow-left me-1"></i>All Devices
+        </button>
+        <span class="fw-semibold fs-5">
+            @(string.IsNullOrEmpty(selectedDevice.Name) ? "(unnamed)" : selectedDevice.Name)
+        </span>
+        <span class="font-monospace text-muted small">@selectedDevice.Address</span>
+        @if (!string.IsNullOrEmpty(selectedDevice.ManufacturerName))
+        {
+            <span class="badge bg-secondary">@selectedDevice.ManufacturerName</span>
+        }
+        <button class="btn btn-sm @(selectedDevice.IsFavorite ? "btn-warning" : "btn-outline-warning")"
+                @onclick="() => ToggleFavorite(selectedDevice.Address)">
+            <i class="fa-solid fa-star"></i>
+        </button>
+    </div>
+
+    <div class="row g-4">
+        <!-- Stats -->
+        <div class="col-12">
+            <div class="row g-3">
+                @if (selectedDevice.Stats is { } stats)
+                {
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Sightings</div>
+                                <div class="fw-bold fs-4">@stats.TotalSightings</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Sessions</div>
+                                <div class="fw-bold fs-4">@stats.TotalSessions</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Avg RSSI</div>
+                                <div class="fw-bold fs-4">@((int)stats.AverageRssi) <small class="text-muted fs-6">dBm</small></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Best / Worst</div>
+                                <div class="fw-bold">@stats.MaxRssi / @stats.MinRssi <small class="text-muted">dBm</small></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Time Monitored</div>
+                                <div class="fw-bold">@FormatSeconds(stats.TotalSecondsMonitored)</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="card h-100 text-center">
+                            <div class="card-body py-3">
+                                <div class="text-muted small">Last Proximity</div>
+                                <div class="fw-semibold">@(stats.LastProximityLabel ?? "—")</div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- Notes -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="text-muted mb-2"><i class="fa-solid fa-note-sticky me-1"></i>Notes</h6>
+                    <div class="d-flex gap-2">
+                        <input class="form-control form-control-sm" placeholder="Add notes about this device…"
+                               @bind="notesInput" />
+                        <button class="btn btn-sm btn-outline-primary" @onclick="SaveNotes">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sessions -->
+        @if (selectedDevice.Sessions.Any())
+        {
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header"><i class="fa-solid fa-list-check me-1"></i>Monitoring Sessions</div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Started</th>
+                                    <th>Ended</th>
+                                    <th>Duration</th>
+                                    <th>Readings</th>
+                                    <th>Avg RSSI</th>
+                                    <th>Min / Max</th>
+                                    <th>Mode</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var s in selectedDevice.Sessions.OrderByDescending(s => s.StartedAt))
+                                {
+                                    <tr>
+                                        <td class="small">@s.StartedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                        <td class="small text-muted">@(s.EndedAt?.ToLocalTime().ToString("HH:mm") ?? "ongoing")</td>
+                                        <td class="small">@(s.Duration.HasValue ? FormatDuration(s.Duration.Value) : "—")</td>
+                                        <td class="small">@s.ReadingCount</td>
+                                        <td class="small">@((int)s.AverageRssi) dBm</td>
+                                        <td class="small">@s.MinRssi / @s.MaxRssi</td>
+                                        <td class="small text-muted">@s.ScanMode</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- Proximity log -->
+        @if (proximityLogs.Any())
+        {
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between">
+                        <span><i class="fa-solid fa-chart-line me-1"></i>Recent Proximity Log</span>
+                        <span class="text-muted small">Showing last @proximityLogs.Count readings</span>
+                    </div>
+
+                    <!-- Sparkline -->
+                    <div class="card-body pb-0">
+                        <svg viewBox="0 0 800 60" preserveAspectRatio="none" style="width:100%;height:60px;display:block">
+                            @if (proximityLogs.Count > 1)
+                            {
+                                <polyline points="@BuildSparkline()" fill="none"
+                                          stroke="#0d6efd" stroke-width="1.5"
+                                          stroke-linejoin="round" stroke-linecap="round" />
+                            }
+                        </svg>
+                    </div>
+
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr><th>Time</th><th>RSSI</th><th>Proximity</th><th>Adv Type</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var p in proximityLogs.Take(50))
+                                {
+                                    <tr>
+                                        <td class="small text-muted">@p.Timestamp.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                                        <td class="small">@p.Rssi dBm</td>
+                                        <td><span class="badge bg-@ProximityBadge(p.ProximityLabel)">@p.ProximityLabel</span></td>
+                                        <td class="small text-muted">@p.AdvType</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- Latest GATT snapshot -->
+        @if (gattSnapshot.Any())
+        {
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fa-solid fa-microscope me-1"></i>Latest GATT Snapshot
+                        <span class="text-muted small ms-2">@gattSnapshot[0].Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr><th>Service</th><th>Characteristic</th><th>Value</th><th>Raw</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var g in gattSnapshot)
+                                {
+                                    <tr>
+                                        <td class="small text-muted">@(g.ServiceName ?? g.ServiceUuid[..8])</td>
+                                        <td class="small fw-semibold">@(g.CharacteristicName ?? g.CharacteristicUuid[..8])</td>
+                                        <td class="small">@g.Value</td>
+                                        <td class="font-monospace text-muted" style="font-size:0.65rem">@g.RawHex</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string? Address { get; set; }
+
+    private List<TrackedDevice> devices = new();
+    private TrackedDevice? selectedDevice;
+    private List<ProximityLog> proximityLogs = new();
+    private List<GattSnapshot> gattSnapshot = new();
+    private string notesInput = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrEmpty(Address))
+            await LoadDeviceDetailAsync();
+        else
+            await LoadDeviceListAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(Address))
+            await LoadDeviceDetailAsync();
+        else
+            await LoadDeviceListAsync();
+    }
+
+    private async Task LoadDeviceListAsync()
+    {
+        selectedDevice = null;
+        devices = await Db.GetAllDevicesAsync();
+    }
+
+    private void GoDetail(string address)  => Nav.NavigateTo($"/history/{address}");
+    private void GoMonitor(string address) => Nav.NavigateTo($"/monitor/{AddressToUlong(address)}");
+    private void GoBack()                  => Nav.NavigateTo("/history");
+
+    private async Task LoadDeviceDetailAsync()
+    {
+        selectedDevice = await Db.GetDeviceAsync(Address!);
+        if (selectedDevice is null) return;
+        notesInput = selectedDevice.Notes ?? string.Empty;
+        proximityLogs = await Db.GetProximityLogsAsync(Address!, 200);
+        gattSnapshot = await Db.GetLatestGattSnapshotAsync(Address!);
+    }
+
+    private async Task ToggleFavorite(string address)
+    {
+        await Db.ToggleFavoriteAsync(address);
+        if (selectedDevice is not null) selectedDevice.IsFavorite = !selectedDevice.IsFavorite;
+        else await LoadDeviceListAsync();
+        StateHasChanged();
+    }
+
+    private async Task DeleteDevice(string address)
+    {
+        await Db.DeleteDeviceAsync(address);
+        await LoadDeviceListAsync();
+    }
+
+    private async Task SaveNotes()
+    {
+        if (selectedDevice is null) return;
+        await Db.UpdateNotesAsync(selectedDevice.Address, notesInput);
+        selectedDevice.Notes = notesInput;
+    }
+
+    private async Task PruneOldLogs()
+    {
+        await Db.PruneOldLogsAsync(30);
+        await LoadDeviceListAsync();
+    }
+
+    private string BuildSparkline()
+    {
+        if (proximityLogs.Count < 2) return string.Empty;
+        var ordered = proximityLogs.OrderBy(p => p.Timestamp).ToList();
+        var minT = ordered[0].Timestamp.Ticks;
+        var maxT = ordered[^1].Timestamp.Ticks;
+        var spanT = maxT - minT;
+        if (spanT == 0) spanT = 1;
+        var minR = ordered.Min(p => p.Rssi) - 5;
+        var maxR = ordered.Max(p => p.Rssi) + 5;
+        var spanR = maxR - minR;
+        if (spanR == 0) spanR = 1;
+        return string.Join(" ", ordered.Select(p =>
+        {
+            var x = (p.Timestamp.Ticks - minT) / (double)spanT * 800;
+            var y = 60 - (p.Rssi - minR) / (double)spanR * 60;
+            return $"{x:F0},{y:F0}";
+        }));
+    }
+
+    private static string ProximityBadge(string? label) => label switch
+    {
+        "Very Close" => "success",
+        "Close"      => "info",
+        "Near"       => "warning",
+        _            => "danger"
+    };
+
+    private static string FormatSeconds(long secs)
+    {
+        if (secs < 60) return $"{secs}s";
+        if (secs < 3600) return $"{secs / 60}m {secs % 60}s";
+        return $"{secs / 3600}h {secs % 3600 / 60}m";
+    }
+
+    private static string FormatDuration(TimeSpan t)
+    {
+        if (t.TotalSeconds < 60) return $"{(int)t.TotalSeconds}s";
+        if (t.TotalHours < 1) return $"{t.Minutes}m {t.Seconds}s";
+        return $"{(int)t.TotalHours}h {t.Minutes}m";
+    }
+
+    private static ulong AddressToUlong(string mac)
+    {
+        var clean = mac.Replace(":", "");
+        return ulong.TryParse(clean, System.Globalization.NumberStyles.HexNumber, null, out var v) ? v : 0;
+    }
+}

@@ -7,6 +7,13 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/Dotnet.gitignore
 
+# SQLite databases (stored in %LOCALAPPDATA%, but exclude any that end up in the repo)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

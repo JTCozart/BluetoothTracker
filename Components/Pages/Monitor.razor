@@ -5,6 +5,7 @@
 @using Windows.Devices.Bluetooth
 @inject BluetoothService Bluetooth
 @inject BleCompanyDatabase BleDb
+@inject DeviceHistoryService Db
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -300,16 +301,32 @@ else
     private bool gattQuerying;
     private string? gattError;
 
+    // DB tracking
+    private int _sessionId = -1;
+    private DateTime _lastLogTime = DateTime.MinValue;
+    private int _logCount;
+    private double _logRssiSum;
+    private int _logMinRssi = 0;
+    private int _logMaxRssi = -127;
+
     protected override void OnInitialized()
     {
         address = ulong.TryParse(AddressRaw, out var parsed) ? parsed : 0;
         targetMac = FormatMac(address);
 
-        // Scanning was stopped when navigating here from the scanner
-
         Bluetooth.DevicesChanged += OnChanged;
         _timer = new System.Threading.Timer(_ => InvokeAsync(Refresh), null,
             TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        _ = StartDbSessionAsync();
+    }
+
+    private async Task StartDbSessionAsync()
+    {
+        if (device is not null)
+            await Db.UpsertDeviceAsync(targetMac, device.Name,
+                device.ManufacturerId, device.GetManufacturerLabel(BleDb));
+        _sessionId = await Db.StartSessionAsync(targetMac, Bluetooth.CurrentMode.ToString());
     }
 
     private void StartScan()
@@ -336,6 +353,17 @@ else
             var cutoff = DateTime.UtcNow.AddSeconds(-60);
             while (history.Count > 0 && history[0].time < cutoff)
                 history.RemoveAt(0);
+
+            // Log to DB every 10 seconds
+            if ((DateTime.UtcNow - _lastLogTime).TotalSeconds >= 10)
+            {
+                _lastLogTime = DateTime.UtcNow;
+                _logCount++;
+                _logRssiSum += device.Rssi;
+                if (_logCount == 1) { _logMinRssi = device.Rssi; _logMaxRssi = device.Rssi; }
+                else { if (device.Rssi < _logMinRssi) _logMinRssi = device.Rssi; if (device.Rssi > _logMaxRssi) _logMaxRssi = device.Rssi; }
+                _ = Db.LogProximityAsync(targetMac, device.Rssi, device.ProximityLabel, device.AdvTypeShort);
+            }
         }
         StateHasChanged();
     }
@@ -406,5 +434,8 @@ else
     {
         _timer?.Dispose();
         Bluetooth.DevicesChanged -= OnChanged;
+        if (_sessionId > 0 && _logCount > 0)
+            _ = Db.EndSessionAsync(_sessionId, _logCount,
+                _logRssiSum / _logCount, _logMinRssi, _logMaxRssi);
     }
 }
